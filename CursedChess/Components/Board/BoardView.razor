@@ -1,0 +1,96 @@
+@namespace CursedChess.Components.Board
+@using CursedChess.Domain.Entities
+
+@if (Board is null)
+{
+    <p>Доска не инициализирована.</p>
+}
+else
+{
+    <table class="board">
+        <thead>
+            <tr>
+                <th class="coord corner"></th>
+                @for (var c = 0; c < Board.Size; c++)
+                {
+                    <th class="coord">@c</th>
+                }
+            </tr>
+        </thead>
+        <tbody>
+            @for (var r = 0; r < Board.Size; r++)
+            {
+                <tr>
+                    <th class="coord rowcoord">@r</th>
+                    @for (var c = 0; c < Board.Size; c++)
+                    {
+                        var row = r;
+                        var col = c;
+                        var cell = Board.Cells.First(x => x.Row == row && x.Column == col);
+                        var hasAgent = CurrentStep?.AgentPositionsSnapshot.Any(p => p.Row == row && p.Column == col) == true
+                            || (CurrentStep is null && FixedPositions.Any(fp => fp.Row == row && fp.Column == col));
+                        var isActive = CurrentStep is { Row: not null, Column: not null } &&
+                                       CurrentStep.Row == row && CurrentStep.Column == col;
+                        var isFixedCell = FixedPositions.Any(fp => fp.Row == row && fp.Column == col);
+                        var isSelectedAgentColumn = SelectedAgentColumn.HasValue && SelectedAgentColumn.Value == col;
+
+                        var style = $"background-color: {cell.Color};";
+
+                        var typeCss = CurrentStep?.Type switch
+                        {
+                            SearchStepType.TryPlace => "try",
+                            SearchStepType.ConflictFound => "conflict",
+                            SearchStepType.Backtrack => "backtrack",
+                            SearchStepType.Placed => "placed",
+                            _ => ""
+                        };
+
+                        var highlightCss = isActive
+                            ? (!string.IsNullOrEmpty(typeCss) ? typeCss : "active")
+                            : "";
+
+                        var fixedCss = isFixedCell ? "fixed" : "";
+                        var selectedCss = isSelectedAgentColumn ? "selected-column" : "";
+
+                        <td class="board-cell @highlightCss @fixedCss @selectedCss"
+                            style="@style"
+                            @onclick="@(() => OnCellClick.InvokeAsync(new Position(row, col)))">
+                            @if (hasAgent)
+                            {
+                                <span class="queen" aria-label="Agent">
+                                    <svg viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                                        <path fill="currentColor" d="M477.518 181.966a25 25 0 0 1-34.91 23l-62.29 150.26h-248.92l-62.24-150.19a25 25 0 1 1 9.73-7.29l87 71.2 20.92-126.4a25 25 0 1 1 14.7-1.85l54.31 117 54.42-117.3a25 25 0 1 1 14.58 2.08l20.93 126.42 87.26-71.3a25 25 0 1 1 44.51-15.63zm-71.66 241.25h-300v60h300v-60zm-27.75-52h-244.22v36h244.22v-36z" />
+                                    </svg>
+                                    @if (isFixedCell)
+                                    {
+                                        <div class="cell-fixed-marker" title="Фиксированная позиция">F</div>
+                                    }
+                                </span>
+                            }
+                            
+                            <!--<div class="cell-cost">@cell.Cost</div>-->
+                        </td>
+                    }
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    [Parameter]
+    public Board? Board { get; set; }
+
+    [Parameter]
+    public SearchStep? CurrentStep { get; set; }
+
+    [Parameter]
+    public IReadOnlyCollection<FixedPosition> FixedPositions { get; set; } = Array.Empty<FixedPosition>();
+
+    [Parameter]
+    public int? SelectedAgentColumn { get; set; }
+
+    [Parameter]
+    public EventCallback<Position> OnCellClick { get; set; }
+}
+

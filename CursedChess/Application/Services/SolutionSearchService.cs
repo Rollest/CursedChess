@@ -1,0 +1,250 @@
+using System.Collections.Generic;
+using CursedChess.Application.Contracts;
+using CursedChess.Domain.Entities;
+using CursedChess.Domain.Rules;
+
+namespace CursedChess.Application.Services;
+
+/// <summary>
+/// Реализация поиска решений с учётом правил конфликтов.
+/// </summary>
+public sealed class SolutionSearchService : ISolutionSearchService
+{
+    /// <summary>
+    /// Находит решения и формирует список шагов поиска по заданной доске и ограничениям.
+    /// </summary>
+    /// <param name="board">Доска, для которой выполняется поиск.</param>
+    /// <param name="conflictRules">Коллекция правил конфликтов между агентами.</param>
+    /// <param name="requireSameColor">Требует ли согласованность по цвету у найденных позиций.</param>
+    /// <returns>Кортеж: найденные решения и шаги поиска.</returns>
+    public (IReadOnlyList<Solution> solutions, IReadOnlyList<SearchStep> steps) FindSolutions(
+        Board board,
+        IReadOnlyCollection<IConflictRule> conflictRules,
+        bool requireSameColor)
+    {
+        var size = board.Size;
+        var boardAgents = board.Agents.Count > 0
+            ? board.Agents
+            : Enumerable.Range(0, size).Select(i => new Agent
+            {
+                BoardId = board.Id,
+                ColumnIndex = i,
+                Priority = i,
+                IsFixed = false
+            }).ToList();
+        var orderedAgents = boardAgents
+            .OrderByDescending(a => a.IsFixed)
+            .ThenBy(a => a.Priority)
+            .ThenBy(a => a.ColumnIndex)
+            .ToList();
+        var fixedByColumn = board.FixedPositions
+            .GroupBy(fp => fp.Column)
+            .ToDictionary(g => g.Key, g => g.First().Row);
+
+        var currentPositions = new Position?[size];
+        var steps = new List<SearchStep>();
+        var solutions = new List<Solution>();
+        var stepIndex = 0;
+
+        /// <summary>
+        /// Добавляет запись шага в трассировку поиска.
+        /// </summary>
+        /// <param name="type">Тип шага поиска.</param>
+        /// <param name="col">Колонка активного агента.</param>
+        /// <param name="row">Строка агента (или `null`, если неприменимо).</param>
+        /// <param name="comment">Краткое текстовое описание шага.</param>
+        /// <param name="snapshot">Снимок позиций агентов на момент шага.</param>
+        void AddStep(SearchStepType type, int col, int? row, string comment, IReadOnlyCollection<Position> snapshot)
+        {
+            steps.Add(new SearchStep
+            {
+                Index = stepIndex++,
+                Type = type,
+                ActiveAgentColumn = col,
+                Row = row,
+                Column = col,
+                Comment = comment,
+                AgentPositionsSnapshot = snapshot
+            });
+        }
+
+        /// <summary>
+        /// Формирует снапшот текущих позиций агентов.
+        /// </summary>
+        /// <returns>Непустая коллекция позиций текущих агентов.</returns>
+        IReadOnlyCollection<Position> BuildSnapshot()
+        {
+            var list = new List<Position>();
+            for (var c = 0; c < size; c++)
+            {
+                if (currentPositions[c] is { } p)
+                {
+                    list.Add(p);
+                }
+            }
+
+            return list;
+        }
+
+        /// <summary>
+        /// Проверяет, что все позиции на доске принадлежат одному цвету.
+        /// </summary>
+        /// <param name="positions">Коллекция позиций, которые нужно проверить.</param>
+        /// <returns>`true`, если цвет всех клеток совпадает; иначе `false`.</returns>
+        bool IsColorConsistent(IReadOnlyCollection<Position> positions)
+        {
+            string? color = null;
+            foreach (var position in positions)
+            {
+                var cell = board.Cells.First(c => c.Row == position.Row && c.Column == position.Column);
+                if (color is null)
+                {
+                    color = cell.Color;
+                }
+                else if (!string.Equals(color, cell.Color, StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// Вычисляет суммарную стоимость набора позиций.
+        /// </summary>
+        /// <param name="positions">Коллекция позиций, для которых суммируется стоимость.</param>
+        /// <returns>Суммарная стоимость позиций.</returns>
+        decimal ComputeCost(IReadOnlyCollection<Position> positions)
+        {
+            decimal sum = 0;
+            foreach (var position in positions)
+            {
+                var cell = board.Cells.First(c => c.Row == position.Row && c.Column == position.Column);
+                sum += cell.Cost;
+            }
+
+            return sum;
+        }
+
+        /// <summary>
+        /// Проверяет, конфликтует ли новая позиция с уже размещёнными агентами.
+        /// </summary>
+        /// <param name="newPos">Новая позиция агента.</param>
+        /// <returns>`true`, если есть конфликт по какому-либо правилу; иначе `false`.</returns>
+        bool HasConflict(Position newPos)
+        {
+            var existing = new List<Position>();
+            for (var c = 0; c < size; c++)
+            {
+                if (currentPositions[c] is { } p)
+                {
+                    existing.Add(p);
+                }
+            }
+
+            foreach (var rule in conflictRules)
+            {
+                if (rule.HasConflict(newPos, existing))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Рекурсивно перебирает размещения агентов по колонкам.
+        /// </summary>
+        /// <param name="agentOrderIndex">Индекс агента в порядке логического взаимодействия.</param>
+        /// <returns>Ничего не возвращает; заполняет список `solutions` через вычисление вариантов.</returns>
+        void Backtrack(int agentOrderIndex)
+        {
+            if (agentOrderIndex == orderedAgents.Count)
+            {
+                var snapshot = BuildSnapshot();
+                var cost = ComputeCost(snapshot);
+                var isColorOk = !requireSameColor || IsColorConsistent(snapshot);
+
+                var solution = new Solution
+                {
+                    BoardId = board.Id,
+                    TotalCost = cost,
+                    IsColorConsistent = isColorOk,
+                    Items = orderedAgents
+                        .Select(agent => new SolutionItem
+                        {
+                            AgentId = agent.Id != 0 ? agent.Id : agent.ColumnIndex,
+                            Row = currentPositions[agent.ColumnIndex]?.Row ?? 0,
+                            Column = agent.ColumnIndex
+                        })
+                        .ToList()
+                };
+
+                AddStep(SearchStepType.SolutionFound, orderedAgents[^1].ColumnIndex, null, "Найдено полное решение", snapshot);
+                solutions.Add(solution);
+                return;
+            }
+
+            var agent = orderedAgents[agentOrderIndex];
+            var column = agent.ColumnIndex;
+
+            if (fixedByColumn.TryGetValue(column, out var fixedRow))
+            {
+                var fixedPos = new Position(fixedRow, column);
+
+                AddStep(SearchStepType.TryPlace, column, fixedRow, "Попытка установить агента в фиксированную позицию", BuildSnapshot());
+
+                if (HasConflict(fixedPos))
+                {
+                    AddStep(SearchStepType.ConflictFound, column, fixedRow, "Конфликт с фиксированной позицией", BuildSnapshot());
+                    return;
+                }
+
+                currentPositions[column] = fixedPos;
+                AddStep(SearchStepType.Placed, column, fixedRow, "Агент установлен в фиксированную позицию", BuildSnapshot());
+
+                Backtrack(agentOrderIndex + 1);
+
+                AddStep(SearchStepType.Backtrack, column, fixedRow, "Откат с фиксированной позиции", BuildSnapshot());
+                currentPositions[column] = null;
+
+                return;
+            }
+
+            for (var row = 0; row < size; row++)
+            {
+                var pos = new Position(row, column);
+
+                AddStep(SearchStepType.TryPlace, column, row, "Попытка установить агента", BuildSnapshot());
+
+                if (HasConflict(pos))
+                {
+                    AddStep(SearchStepType.ConflictFound, column, row, "Обнаружен конфликт", BuildSnapshot());
+                    continue;
+                }
+
+                currentPositions[column] = pos;
+                AddStep(SearchStepType.Placed, column, row, "Агент успешно установлен", BuildSnapshot());
+
+                Backtrack(agentOrderIndex + 1);
+
+                AddStep(SearchStepType.Backtrack, column, row, "Откат к предыдущему агенту", BuildSnapshot());
+                currentPositions[column] = null;
+            }
+        }
+
+        Backtrack(0);
+
+        if (requireSameColor)
+        {
+            solutions = solutions
+                .Where(s => s.IsColorConsistent)
+                .ToList();
+        }
+
+        return (solutions, steps);
+    }
+}
+

@@ -1,0 +1,685 @@
+@page "/"
+@rendermode InteractiveServer
+
+@using CursedChess.Application.Contracts
+@using CursedChess.Domain.Entities
+@using CursedChess.Domain.Rules
+@using CursedChess.Components.Board
+
+@inject ISolutionSearchService SolutionSearch
+@inject ISolutionRepository SolutionRepository
+@inject IBoardRepository BoardRepository
+
+<PageTitle>Cursed Chess</PageTitle>
+
+<style>
+    .solutions-panel li.active-solution {
+        background-color: #ffe8a3;
+        border: 1px solid #e0b84f;
+        border-radius: 6px;
+        padding: 4px 8px;
+        font-weight: 600;
+    }
+</style>
+
+<h1>Многоагентная доска</h1>
+
+<div class="main-layout">
+    <div class="settings-panel">
+        <h3>Настройки</h3>
+        <label>
+            Размер доски N:
+            <input type="number" min="1" @bind="boardSize" @bind:after="OnBoardSizeChanged" />
+        </label>
+        <div>
+            <label>
+                <input type="checkbox" @bind="requireSameColor" />
+                Все агенты на клетках одного цвета
+            </label>
+        </div>
+        <div>
+            <label>
+                Сортировка по стоимости:
+                <select @bind="sortMode" @bind:after="OnSortModeChanged">
+                    <option value="1">По возрастанию</option>
+                    <option value="2">По убыванию</option>
+                </select>
+            </label>
+        </div>
+        <div>
+            <label>
+                Активный агент:
+                <select @bind="selectedAgentColumn">
+                    @foreach (var agent in OrderedAgentsForEditing)
+                    {
+                        <option value="@agent.ColumnIndex">Агент (колонка @agent.ColumnIndex)</option>
+                    }
+                </select>
+            </label>
+        </div>
+        <div class="priority-list">
+            <h4>Приоритеты агентов</h4>
+            @foreach (var agent in OrderedAgentsForEditing)
+            {
+                <div>
+                    <span>Агент (колонка @agent.ColumnIndex)</span>
+                    <input type="number" min="0" @bind="agent.Priority" />
+                    <label>
+                        <input type="checkbox" checked="@agent.IsFixed" @onchange="(e) => SetFixedFlag(agent, e)" />
+                        Фиксирован
+                    </label>
+                </div>
+            }
+        </div>
+        @if (!string.IsNullOrWhiteSpace(boardMessage))
+        {
+            <p>@boardMessage</p>
+        }
+        <button @onclick="RunSearch">Запустить поиск</button>
+        <button @onclick="LoadSavedSolutions">Загрузить сохранённые решения</button>
+    </div>
+
+    <div class="board-and-controls">
+        <BoardView Board="board"
+                   CurrentStep="CurrentStep"
+                   FixedPositions="board.FixedPositions.ToList()"
+                   SelectedAgentColumn="SelectedAgent?.ColumnIndex"
+                   OnCellClick="HandleBoardCellClick" />
+
+        <div class="animation-controls">
+            <div class="speed-row">
+                <label>
+                    Скорость (мс/шаг):
+                    <input type="range" min="50" max="1500" step="50" @bind="stepDelayMs" />
+                </label>
+                <span class="speed-value">@stepDelayMs</span>
+            </div>
+
+            <button @onclick="StartFromBeginning" disabled="@_isPlaying">Начать</button>
+            <button @onclick="ContinuePlayback" disabled="@(!_isPlaying)">Продолжить</button>
+            <button @onclick="Pause" disabled="@(!_isPlaying)">Пауза</button>
+            <button @onclick="NextStep" disabled="@_isPlaying">Шаг вперёд</button>
+            <button @onclick="PreviousStep" disabled="@_isPlaying">Шаг назад</button>
+            <button @onclick="Reset" disabled="@(!_isPlaying && currentStepIndex == 0)">Сброс</button>
+            <button @onclick="NextSolution" disabled="@_isPlaying">К следующему решению</button>
+        </div>
+    </div>
+
+    <div class="solutions-panel">
+        <h3>Решения (@solutions.Count)</h3>
+        <ul>
+            @for (var i = 0; i < solutions.Count; i++)
+            {
+                var s = solutions[i];
+                <li class="@(i == CurrentSolutionListIndex ? "active-solution" : "")"
+                    @onclick="() => ShowSolution(i)">
+                    Решение @i: стоимость @s.TotalCost, цветовой фильтр: @(s.IsColorConsistent ? "да" : "нет")
+                </li>
+            }
+        </ul>
+    </div>
+</div>
+
+@code {
+    @implements IDisposable
+    private int boardSize = 4;
+    private bool requireSameColor = false;
+    private int sortMode = 1;
+    private int selectedAgentColumn;
+    private string? boardMessage;
+
+    private Board board = new();
+    private List<Solution> solutions = new();
+    private List<SearchStep> steps = new();
+    private List<int> solutionFoundStepIndices = new();
+    private int currentStepIndex;
+
+    private int stepDelayMs = 200;
+    private CancellationTokenSource? playbackCts;
+    private bool _isPlaying;
+
+    private SearchStep? CurrentStep => steps.Count > 0 && currentStepIndex >= 0 && currentStepIndex < steps.Count
+        ? steps[currentStepIndex]
+        : null;
+    private List<Agent> OrderedAgentsForEditing => board.Agents
+        .OrderByDescending(a => a.IsFixed)
+        .ThenBy(a => a.Priority)
+        .ThenBy(a => a.ColumnIndex)
+        .ToList();
+    private Agent? SelectedAgent => board.Agents.FirstOrDefault(a => a.ColumnIndex == selectedAgentColumn);
+    private int CurrentSolutionListIndex
+    {
+        get
+        {
+            if (solutionFoundStepIndices.Count == 0)
+            {
+                return -1;
+            }
+
+            for (var i = 0; i < solutionFoundStepIndices.Count; i++)
+            {
+                if (solutionFoundStepIndices[i] == currentStepIndex)
+                {
+                    return i;
+                }
+            }
+
+            return -1;
+        }
+    }
+
+    /// <summary>
+    /// Выполняет начальную инициализацию страницы.
+    /// </summary>
+    protected override void OnInitialized()
+    {
+        InitializeBoard();
+    }
+
+    /// <summary>
+    /// Останавливает текущее воспроизведение шагов.
+    /// </summary>
+    private void CancelPlayback()
+    {
+        try
+        {
+            playbackCts?.Cancel();
+        }
+        catch
+        {
+            // ignore
+        }
+        playbackCts?.Dispose();
+        playbackCts = null;
+        _isPlaying = false;
+    }
+
+    /// <summary>
+    /// Последовательно проигрывает шаги трассировки с задержкой.
+    /// </summary>
+    /// <param name="token">Токен отмены воспроизведения.</param>
+    /// <returns>Задача завершения цикла воспроизведения.</returns>
+    private async Task PlaybackLoop(CancellationToken token)
+    {
+        _isPlaying = true;
+        try
+        {
+            for (var i = currentStepIndex; i < steps.Count; i++)
+            {
+                token.ThrowIfCancellationRequested();
+                currentStepIndex = i;
+                await InvokeAsync(StateHasChanged);
+                await Task.Delay(stepDelayMs, token);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // expected on pause/reset
+        }
+        finally
+        {
+            _isPlaying = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    /// <summary>
+    /// Пересоздаёт доску после изменения размера N.
+    /// </summary>
+    /// <returns>Ничего не возвращает.</returns>
+    private void OnBoardSizeChanged()
+    {
+        if (boardSize < 1)
+        {
+            boardSize = 1;
+        }
+
+        CancelPlayback();
+        boardMessage = null;
+        solutions = new List<Solution>();
+        steps = new List<SearchStep>();
+        solutionFoundStepIndices = new List<int>();
+        currentStepIndex = 0;
+        InitializeBoard();
+    }
+
+    /// <summary>
+    /// Создаёт стартовую доску выбранного размера.
+    /// </summary>
+    private void InitializeBoard()
+    {
+        var previousAgents = board.Agents
+            .Select(a => new Agent
+            {
+                Id = a.Id,
+                ColumnIndex = a.ColumnIndex,
+                IsFixed = a.IsFixed,
+                Priority = a.Priority
+            })
+            .ToDictionary(a => a.ColumnIndex, a => a);
+        var previousFixed = board.FixedPositions
+            .ToDictionary(fp => fp.Column, fp => fp.Row);
+
+        var cells = new List<Cell>();
+        for (var r = 0; r < boardSize; r++)
+        {
+            for (var c = 0; c < boardSize; c++)
+            {
+                // Три цвета и разные стоимости, чтобы \"база знаний\" (цвет+стоимость) была значимой.
+                var colorIndex = (r + c) % 3;
+                string color;
+                decimal cost;
+                switch (colorIndex)
+                {
+                    case 0:
+                        color = "#ede8da"; // светлая клетка
+                        cost = 1m;
+                        break;
+                    case 1:
+                        color = "#A0A0A0"; // серая клетка
+                        cost = 2m;
+                        break;
+                    default:
+                        color = "#FFD27F"; // \"золотая\" клетка
+                        cost = 3m;
+                        break;
+                }
+
+                cells.Add(new Cell
+                {
+                    Row = r,
+                    Column = c,
+                    Cost = cost,
+                    Color = color
+                });
+            }
+        }
+
+        var agents = new List<Agent>();
+        for (var c = 0; c < boardSize; c++)
+        {
+            if (previousAgents.TryGetValue(c, out var existing))
+            {
+                agents.Add(new Agent
+                {
+                    ColumnIndex = c,
+                    IsFixed = existing.IsFixed,
+                    Priority = existing.Priority
+                });
+            }
+            else
+            {
+                agents.Add(new Agent
+                {
+                    ColumnIndex = c,
+                    IsFixed = false,
+                    Priority = c
+                });
+            }
+        }
+
+        var fixedPositions = new List<FixedPosition>();
+        foreach (var agent in agents.Where(a => a.IsFixed))
+        {
+            if (previousFixed.TryGetValue(agent.ColumnIndex, out var fixedRow))
+            {
+                fixedPositions.Add(new FixedPosition
+                {
+                    Agent = agent,
+                    Row = fixedRow,
+                    Column = agent.ColumnIndex
+                });
+            }
+        }
+
+        board = new Board
+        {
+            Size = boardSize,
+            Cells = cells,
+            Agents = agents,
+            FixedPositions = fixedPositions
+        };
+        selectedAgentColumn = board.Agents.OrderBy(a => a.ColumnIndex).FirstOrDefault()?.ColumnIndex ?? 0;
+    }
+
+    /// <summary>
+    /// Запускает поиск решений и сохраняет результаты.
+    /// </summary>
+    /// <returns>Задача завершения поиска и сохранения.</returns>
+    private async Task RunSearch()
+    {
+        try
+        {
+            CancelPlayback();
+            boardMessage = null;
+            // Сохраняем каждый запуск как новый снимок доски, чтобы избежать конфликтов
+            // при повторном Update графа сущностей (агенты/фиксации/клетки).
+            InitializeBoard();
+            SyncFixedPositionsWithAgents();
+
+            var rules = new List<IConflictRule>();
+            rules.Add(new RowConflictRule());
+            rules.Add(new DiagonalConflictRule());
+
+            await BoardRepository.SaveBoardAsync(board);
+            var result = SolutionSearch.FindSolutions(board, rules, requireSameColor);
+            foreach (var solution in result.solutions)
+            {
+                solution.BoardId = board.Id;
+            }
+            await SolutionRepository.SaveSolutionsAsync(result.solutions);
+
+            solutions = result.solutions.ToList();
+            ApplySort();
+            steps = result.steps.ToList();
+            currentStepIndex = 0;
+
+            // На шаги типа SolutionFound — соответствуют элементы solutions в порядке добавления
+            solutionFoundStepIndices = steps
+                .Select((s, idx) => new { s.Type, idx })
+                .Where(x => x.Type == SearchStepType.SolutionFound)
+                .Select(x => x.idx)
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            boardMessage = $"Ошибка поиска: {ex.Message}";
+        }
+    }
+
+    /// <summary>
+    /// Загружает сохранённые решения для текущей доски.
+    /// </summary>
+    /// <returns>Задача завершения загрузки решений.</returns>
+    private async Task LoadSavedSolutions()
+    {
+        try
+        {
+            CancelPlayback();
+            if (board.Id == 0)
+            {
+                return;
+            }
+
+            var saved = await SolutionRepository.GetSolutionsForBoardAsync(board.Id);
+            solutions = saved.ToList();
+            ApplySort();
+
+            // Для отображения на доске создаём "одношаговые" снапшоты без журнала перебора.
+            steps = solutions
+                .Select((s, idx) => new SearchStep
+                {
+                    Index = idx,
+                    Type = SearchStepType.SolutionFound,
+                    ActiveAgentColumn = 0,
+                    Row = null,
+                    Column = null,
+                    Comment = "Загруженное решение",
+                    AgentPositionsSnapshot = s.Items.Select(it => new Position(it.Row, it.Column)).ToList()
+                })
+                .ToList();
+
+            solutionFoundStepIndices = Enumerable.Range(0, steps.Count).ToList();
+            currentStepIndex = 0;
+        }
+        catch (Exception ex)
+        {
+            boardMessage = $"Ошибка загрузки: {ex.Message}";
+        }
+    }
+
+    /// <summary>
+    /// Запускает воспроизведение шагов с начала.
+    /// </summary>
+    /// <returns>Задача завершения запуска воспроизведения.</returns>
+    private async Task StartFromBeginning()
+    {
+        if (steps.Count == 0)
+        {
+            return;
+        }
+
+        CancelPlayback();
+        currentStepIndex = 0;
+        playbackCts = new CancellationTokenSource();
+        await PlaybackLoop(playbackCts.Token);
+    }
+
+    /// <summary>
+    /// Ставит воспроизведение на паузу.
+    /// </summary>
+    private void Pause()
+    {
+        CancelPlayback();
+    }
+
+    /// <summary>
+    /// Продолжает воспроизведение с текущего шага.
+    /// </summary>
+    /// <returns>Задача завершения продолжения воспроизведения.</returns>
+    private async Task ContinuePlayback()
+    {
+        if (_isPlaying || steps.Count == 0)
+        {
+            return;
+        }
+
+        CancelPlayback();
+        playbackCts = new CancellationTokenSource();
+        await PlaybackLoop(playbackCts.Token);
+    }
+
+    /// <summary>
+    /// Переключает отображение на следующий шаг.
+    /// </summary>
+    private void NextStep()
+    {
+        if (_isPlaying)
+        {
+            return;
+        }
+
+        CancelPlayback();
+        if (currentStepIndex < steps.Count - 1)
+        {
+            currentStepIndex++;
+        }
+        StateHasChanged();
+    }
+
+    /// <summary>
+    /// Переключает отображение на предыдущий шаг.
+    /// </summary>
+    private void PreviousStep()
+    {
+        if (_isPlaying)
+        {
+            return;
+        }
+
+        CancelPlayback();
+        if (currentStepIndex > 0)
+        {
+            currentStepIndex--;
+        }
+        StateHasChanged();
+    }
+
+    /// <summary>
+    /// Сбрасывает воспроизведение к начальному состоянию.
+    /// </summary>
+    private void Reset()
+    {
+        CancelPlayback();
+        currentStepIndex = 0;
+        StateHasChanged();
+    }
+
+    /// <summary>
+    /// Переходит к следующему найденному решению.
+    /// </summary>
+    private void NextSolution()
+    {
+        if (solutionFoundStepIndices.Count == 0)
+        {
+            return;
+        }
+
+        CancelPlayback();
+        var next = solutionFoundStepIndices
+            .Where(idx => idx > currentStepIndex)
+            .DefaultIfEmpty(currentStepIndex)
+            .Min();
+
+        currentStepIndex = next;
+        StateHasChanged();
+    }
+
+    /// <summary>
+    /// Показывает выбранное решение по его индексу.
+    /// </summary>
+    /// <param name="index">Индекс решения в списке.</param>
+    private void ShowSolution(int index)
+    {
+        if (index < 0 || index >= solutionFoundStepIndices.Count)
+        {
+            currentStepIndex = 0;
+            return;
+        }
+
+        CancelPlayback();
+        currentStepIndex = solutionFoundStepIndices[index];
+        StateHasChanged();
+    }
+
+    /// <summary>
+    /// Освобождает ресурсы воспроизведения при закрытии компонента.
+    /// </summary>
+    public void Dispose()
+    {
+        CancelPlayback();
+    }
+
+    /// <summary>
+    /// Обрабатывает клик по клетке и фиксирует позицию активного агента.
+    /// </summary>
+    /// <param name="position">Позиция выбранной клетки.</param>
+    /// <returns>Задача завершения обработки клика.</returns>
+    private Task HandleBoardCellClick(Position position)
+    {
+        boardMessage = null;
+        var agent = SelectedAgent;
+        if (agent is null)
+        {
+            boardMessage = "Сначала выберите активного агента.";
+            return Task.CompletedTask;
+        }
+
+        if (position.Column != agent.ColumnIndex)
+        {
+            boardMessage = $"Агент в колонке {agent.ColumnIndex} может быть зафиксирован только в своей колонке.";
+            return Task.CompletedTask;
+        }
+
+        var current = board.FixedPositions.FirstOrDefault(fp => fp.Column == agent.ColumnIndex);
+        if (current is not null && current.Row == position.Row)
+        {
+            board.FixedPositions.Remove(current);
+            agent.IsFixed = false;
+            return Task.CompletedTask;
+        }
+
+        if (current is null)
+        {
+            current = new FixedPosition { Agent = agent, Column = agent.ColumnIndex };
+            board.FixedPositions.Add(current);
+        }
+
+        current.Row = position.Row;
+        current.Column = agent.ColumnIndex;
+        agent.IsFixed = true;
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Переключает признак фиксированной позиции для агента.
+    /// </summary>
+    /// <param name="agent">Агент, для которого меняется признак фиксации.</param>
+    /// <param name="args">Аргументы события изменения.</param>
+    /// <returns>Ничего не возвращает.</returns>
+    private void SetFixedFlag(Agent agent, ChangeEventArgs args)
+    {
+        var isChecked = args.Value is bool value && value;
+        agent.IsFixed = isChecked;
+
+        var current = board.FixedPositions.FirstOrDefault(fp => fp.Column == agent.ColumnIndex);
+        if (!isChecked)
+        {
+            if (current is not null)
+            {
+                board.FixedPositions.Remove(current);
+            }
+            return;
+        }
+
+        if (current is null)
+        {
+            board.FixedPositions.Add(new FixedPosition
+            {
+                Agent = agent,
+                Column = agent.ColumnIndex,
+                Row = 0
+            });
+        }
+    }
+
+    /// <summary>
+    /// Синхронизирует список фиксированных позиций с состоянием агентов.
+    /// </summary>
+    /// <returns>Ничего не возвращает.</returns>
+    private void SyncFixedPositionsWithAgents()
+    {
+        var fixedByColumn = board.FixedPositions
+            .GroupBy(fp => fp.Column)
+            .ToDictionary(g => g.Key, g => g.First());
+        board.FixedPositions = board.Agents
+            .Where(a => a.IsFixed)
+            .Select(a =>
+            {
+                if (fixedByColumn.TryGetValue(a.ColumnIndex, out var existing))
+                {
+                    existing.Column = a.ColumnIndex;
+                    existing.Agent = a;
+                    return existing;
+                }
+
+                return new FixedPosition
+                {
+                    Agent = a,
+                    Column = a.ColumnIndex,
+                    Row = 0
+                };
+            })
+            .ToList();
+    }
+
+    /// <summary>
+    /// Применяет сортировку списка решений по выбранному режиму.
+    /// </summary>
+    /// <returns>Ничего не возвращает.</returns>
+    private void ApplySort()
+    {
+        solutions = sortMode == 2
+            ? solutions.OrderByDescending(s => s.TotalCost).ToList()
+            : solutions.OrderBy(s => s.TotalCost).ToList();
+    }
+
+    /// <summary>
+    /// Применяет сортировку сразу после изменения режима в интерфейсе.
+    /// </summary>
+    /// <returns>Ничего не возвращает.</returns>
+    private void OnSortModeChanged()
+    {
+        ApplySort();
+    }
+}
