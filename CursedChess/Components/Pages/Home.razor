@@ -20,6 +20,46 @@
         padding: 4px 8px;
         font-weight: 600;
     }
+
+    .color-spec-panel {
+        margin-top: 12px;
+        padding-top: 12px;
+        border-top: 1px solid rgba(0,0,0,0.08);
+    }
+
+    .color-spec-panel h4 {
+        margin: 0 0 8px;
+        font-size: 1rem;
+    }
+
+    .color-spec-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 10px;
+        font-size: 0.9rem;
+    }
+
+    .color-spec-row input[type="color"] {
+        width: 40px;
+        height: 32px;
+        padding: 0;
+        border: 1px solid rgba(0,0,0,0.15);
+        border-radius: 4px;
+        cursor: pointer;
+    }
+
+    .color-spec-row .pct-hint {
+        color: #555;
+        font-size: 0.85rem;
+    }
+
+    .brush-row-selected {
+        outline: 2px solid #2563eb;
+        outline-offset: 2px;
+        border-radius: 6px;
+    }
 </style>
 
 <h1>Многоагентная доска</h1>
@@ -45,6 +85,64 @@
                     <option value="2">По убыванию</option>
                 </select>
             </label>
+        </div>
+        <div class="color-spec-panel">
+            <h4>Цвета клеток</h4>
+            <div>
+                <label>
+                    <input type="checkbox" checked="@useAutomaticCellDistribution" @onchange="OnAutomaticDistributionChanged" />
+                    Автоматическое распределение по долям
+                </label>
+            </div>
+            @if (useAutomaticCellDistribution)
+            {
+                <p class="pct-hint" style="margin: 8px 0;">
+                    Доли задают долю клеток каждого цвета (подбирается точное число клеток на доске). При изменении доска пересоздаётся.
+                </p>
+            }
+            else
+            {
+                <p class="pct-hint" style="margin: 8px 0;">
+                    Выберите кисть (цвет и цена строки) и режим клика по доске; клик по клетке закрашивает её. Доли в этом режиме не используются.
+                </p>
+                <div style="margin-bottom: 10px;">
+                    <span class="pct-hint">Клик по доске:</span>
+                    <label><input type="radio" name="boardClickMode" checked="@boardInteractionAgents" @onchange="@(_ => SetBoardInteractionAgents(true))" /> Фиксация агента</label>
+                    <label><input type="radio" name="boardClickMode" checked="@(!boardInteractionAgents)" @onchange="@(_ => SetBoardInteractionAgents(false))" /> Закрашивание клетки</label>
+                </div>
+            }
+            @for (var i = 0; i < 3; i++)
+            {
+                var index = i;
+                <div class="color-spec-row @(useAutomaticCellDistribution ? "" : (selectedBrushIndex == index ? "brush-row-selected" : ""))">
+                    @if (!useAutomaticCellDistribution)
+                    {
+                        <label class="pct-hint" title="Активная кисть">
+                            <input type="radio" name="brushPick" checked="@(selectedBrushIndex == index)" @onchange="@(_ => { selectedBrushIndex = index; })" />
+                            Кисть
+                        </label>
+                    }
+                    <input type="color"
+                           value="@cellColors[index]"
+                           @onchange="@(e => OnCellColorPicked(index, e))" />
+                    @if (useAutomaticCellDistribution)
+                    {
+                        <label>
+                            Доля:
+                            <input type="number" min="0" step="1" style="width: 4.5rem;"
+                                   @bind="colorWeights[index]"
+                                   @bind:after="OnAutoPaletteChanged" />
+                        </label>
+                        <span class="pct-hint">целевая доля ~@GetEffectivePercentLabel(index)%</span>
+                    }
+                    <label>
+                        Цена:
+                        <input type="number" min="0" step="0.01" style="width: 4.5rem;"
+                               @bind="colorCosts[index]"
+                               @bind:after="OnPaletteCostChanged" />
+                    </label>
+                </div>
+            }
         </div>
         <div>
             <label>
@@ -77,6 +175,7 @@
         }
         <button @onclick="RunSearch">Запустить поиск</button>
         <button @onclick="LoadSavedSolutions">Загрузить сохранённые решения</button>
+        <button @onclick="LoadBoardFromDatabase">Загрузить последнюю доску из БД</button>
     </div>
 
     <div class="board-and-controls">
@@ -84,6 +183,7 @@
                    CurrentStep="CurrentStep"
                    FixedPositions="board.FixedPositions.ToList()"
                    SelectedAgentColumn="SelectedAgent?.ColumnIndex"
+                   IsPaintMode="@(!useAutomaticCellDistribution && !boardInteractionAgents)"
                    OnCellClick="HandleBoardCellClick" />
 
         <div class="animation-controls">
@@ -96,7 +196,7 @@
             </div>
 
             <button @onclick="StartFromBeginning" disabled="@_isPlaying">Начать</button>
-            <button @onclick="ContinuePlayback" disabled="@(!_isPlaying)">Продолжить</button>
+            <button @onclick="ContinuePlayback" disabled="@(_isPlaying || steps.Count == 0 || currentStepIndex >= steps.Count - 1)">Продолжить</button>
             <button @onclick="Pause" disabled="@(!_isPlaying)">Пауза</button>
             <button @onclick="NextStep" disabled="@_isPlaying">Шаг вперёд</button>
             <button @onclick="PreviousStep" disabled="@_isPlaying">Шаг назад</button>
@@ -127,6 +227,13 @@
     private int sortMode = 1;
     private int selectedAgentColumn;
     private string? boardMessage;
+
+    private string[] cellColors = ["#F54227", "#27E4F5", "#27F52E"];
+    private int[] colorWeights = [33, 33, 34];
+    private decimal[] colorCosts = [1m, 2m, 3m];
+    private bool useAutomaticCellDistribution = true;
+    private bool boardInteractionAgents = true;
+    private int selectedBrushIndex;
 
     private Board board = new();
     private List<Solution> solutions = new();
@@ -202,6 +309,7 @@
     private async Task PlaybackLoop(CancellationToken token)
     {
         _isPlaying = true;
+        var startedFrom = currentStepIndex;
         try
         {
             for (var i = currentStepIndex; i < steps.Count; i++)
@@ -209,6 +317,12 @@
                 token.ThrowIfCancellationRequested();
                 currentStepIndex = i;
                 await InvokeAsync(StateHasChanged);
+
+                if (steps[i].Type == SearchStepType.SolutionFound && i > startedFrom)
+                {
+                    break;
+                }
+
                 await Task.Delay(stepDelayMs, token);
             }
         }
@@ -244,6 +358,134 @@
     }
 
     /// <summary>
+    /// Пересоздаёт доску после изменения палитры, долей или цен (только в режиме автоматического распределения).
+    /// </summary>
+    private void OnColorSettingsChanged()
+    {
+        if (!useAutomaticCellDistribution)
+        {
+            return;
+        }
+
+        CancelPlayback();
+        boardMessage = null;
+        solutions = new List<Solution>();
+        steps = new List<SearchStep>();
+        solutionFoundStepIndices = new List<int>();
+        currentStepIndex = 0;
+        InitializeBoard();
+    }
+
+    private void OnAutomaticDistributionChanged(ChangeEventArgs e)
+    {
+        useAutomaticCellDistribution = e.Value is bool b && b;
+        if (useAutomaticCellDistribution)
+        {
+            OnColorSettingsChanged();
+        }
+        else
+        {
+            CancelPlayback();
+            boardMessage = null;
+            solutions = new List<Solution>();
+            steps = new List<SearchStep>();
+            solutionFoundStepIndices = new List<int>();
+            currentStepIndex = 0;
+            boardInteractionAgents = true;
+            InitializeBoard();
+        }
+    }
+
+    private void SetBoardInteractionAgents(bool agents)
+    {
+        boardInteractionAgents = agents;
+    }
+
+    private void OnAutoPaletteChanged()
+    {
+        OnColorSettingsChanged();
+    }
+
+    private void OnPaletteCostChanged()
+    {
+        if (useAutomaticCellDistribution)
+        {
+            OnColorSettingsChanged();
+        }
+    }
+
+    private void OnCellColorPicked(int index, ChangeEventArgs e)
+    {
+        var v = e.Value?.ToString();
+        if (!string.IsNullOrWhiteSpace(v))
+        {
+            cellColors[index] = v;
+        }
+
+        if (useAutomaticCellDistribution)
+        {
+            OnColorSettingsChanged();
+        }
+    }
+
+    private string GetEffectivePercentLabel(int index)
+    {
+        var weights = colorWeights.Select(w => (decimal)Math.Max(0, w)).ToArray();
+        var totalCells = boardSize * boardSize;
+        if (totalCells == 0)
+        {
+            return "0";
+        }
+
+        var counts = DistributeCellCounts(totalCells, weights);
+        var p = 100m * counts[index] / totalCells;
+        return p.ToString("0.#", System.Globalization.CultureInfo.GetCultureInfo("ru-RU"));
+    }
+
+    /// <summary>
+    /// Раскладывает total клеток по цветам пропорционально весам (остаток по наибольшим дробным частям).
+    /// </summary>
+    private static int[] DistributeCellCounts(int total, decimal[] weights)
+    {
+        var n = weights.Length;
+        if (n == 0)
+        {
+            return Array.Empty<int>();
+        }
+
+        var sumW = weights.Sum();
+        if (sumW <= 0)
+        {
+            weights = Enumerable.Repeat(1m / n, n).ToArray();
+            sumW = 1m;
+        }
+
+        var norm = weights.Select(w => w / sumW).ToArray();
+        var exact = norm.Select(w => (decimal)total * w).ToArray();
+        var floors = exact.Select(x => (int)Math.Floor(x)).ToArray();
+        var remainder = total - floors.Sum();
+        var order = Enumerable.Range(0, n)
+            .OrderByDescending(i => exact[i] - floors[i])
+            .ToArray();
+        var counts = floors.ToArray();
+        for (var i = 0; i < remainder; i++)
+        {
+            counts[order[i]]++;
+        }
+
+        return counts;
+    }
+
+    private static void Shuffle<T>(IList<T> list)
+    {
+        for (var i = list.Count - 1; i > 0; i--)
+        {
+            var j = Random.Shared.Next(i + 1);
+            (list[i], list[j]) = (list[j], list[i]);
+        }
+    }
+
+    /// <summary>
     /// Создаёт стартовую доску выбранного размера.
     /// </summary>
     private void InitializeBoard()
@@ -261,37 +503,67 @@
             .ToDictionary(fp => fp.Column, fp => fp.Row);
 
         var cells = new List<Cell>();
-        for (var r = 0; r < boardSize; r++)
+        if (useAutomaticCellDistribution)
         {
-            for (var c = 0; c < boardSize; c++)
+            var weights = colorWeights.Select(w => (decimal)Math.Max(0, w)).ToArray();
+            var totalCells = boardSize * boardSize;
+            var counts = DistributeCellCounts(totalCells, weights);
+            var colorIndices = new List<int>(totalCells);
+            for (var i = 0; i < 3; i++)
             {
-                // Три цвета и разные стоимости, чтобы \"база знаний\" (цвет+стоимость) была значимой.
-                var colorIndex = (r + c) % 3;
-                string color;
-                decimal cost;
-                switch (colorIndex)
+                for (var k = 0; k < counts[i]; k++)
                 {
-                    case 0:
-                        color = "#ede8da"; // светлая клетка
-                        cost = 1m;
-                        break;
-                    case 1:
-                        color = "#A0A0A0"; // серая клетка
-                        cost = 2m;
-                        break;
-                    default:
-                        color = "#FFD27F"; // \"золотая\" клетка
-                        cost = 3m;
-                        break;
+                    colorIndices.Add(i);
                 }
+            }
 
-                cells.Add(new Cell
+            Shuffle(colorIndices);
+            var cellIdx = 0;
+            for (var r = 0; r < boardSize; r++)
+            {
+                for (var c = 0; c < boardSize; c++)
                 {
-                    Row = r,
-                    Column = c,
-                    Cost = cost,
-                    Color = color
-                });
+                    var ci = colorIndices[cellIdx++];
+                    cells.Add(new Cell
+                    {
+                        Row = r,
+                        Column = c,
+                        Cost = colorCosts[ci],
+                        Color = cellColors[ci]
+                    });
+                }
+            }
+        }
+        else
+        {
+            var oldMap = board.Cells.Count > 0
+                ? board.Cells.ToDictionary(x => (x.Row, x.Column))
+                : new Dictionary<(int Row, int Col), Cell>();
+            for (var r = 0; r < boardSize; r++)
+            {
+                for (var c = 0; c < boardSize; c++)
+                {
+                    if (oldMap.TryGetValue((r, c), out var oldCell))
+                    {
+                        cells.Add(new Cell
+                        {
+                            Row = r,
+                            Column = c,
+                            Cost = oldCell.Cost,
+                            Color = oldCell.Color
+                        });
+                    }
+                    else
+                    {
+                        cells.Add(new Cell
+                        {
+                            Row = r,
+                            Column = c,
+                            Cost = colorCosts[0],
+                            Color = cellColors[0]
+                        });
+                    }
+                }
             }
         }
 
@@ -352,9 +624,6 @@
         {
             CancelPlayback();
             boardMessage = null;
-            // Сохраняем каждый запуск как новый снимок доски, чтобы избежать конфликтов
-            // при повторном Update графа сущностей (агенты/фиксации/клетки).
-            InitializeBoard();
             SyncFixedPositionsWithAgents();
 
             var rules = new List<IConflictRule>();
@@ -362,6 +631,7 @@
             rules.Add(new DiagonalConflictRule());
 
             await BoardRepository.SaveBoardAsync(board);
+            boardMessage = $"Доска сохранена в БД, Id = {board.Id} (цвета и стоимость клеток — в таблице Cells).";
             var result = SolutionSearch.FindSolutions(board, rules, requireSameColor);
             foreach (var solution in result.solutions)
             {
@@ -374,16 +644,46 @@
             steps = result.steps.ToList();
             currentStepIndex = 0;
 
-            // На шаги типа SolutionFound — соответствуют элементы solutions в порядке добавления
-            solutionFoundStepIndices = steps
-                .Select((s, idx) => new { s.Type, idx })
-                .Where(x => x.Type == SearchStepType.SolutionFound)
-                .Select(x => x.idx)
-                .ToList();
+            solutionFoundStepIndices = BuildSolutionStepIndicesForDisplayedSolutions();
         }
         catch (Exception ex)
         {
             boardMessage = $"Ошибка поиска: {ex.Message}";
+        }
+    }
+
+    /// <summary>
+    /// Поднимает последнюю сохранённую доску из БД (включая цвета и цены клеток).
+    /// </summary>
+    private async Task LoadBoardFromDatabase()
+    {
+        try
+        {
+            CancelPlayback();
+            boardMessage = null;
+            var loaded = await BoardRepository.GetLatestBoardAsync();
+            if (loaded is null)
+            {
+                boardMessage = "В базе нет сохранённых досок.";
+                return;
+            }
+
+            boardSize = loaded.Size;
+            useAutomaticCellDistribution = false;
+            boardInteractionAgents = true;
+            board = loaded;
+            selectedAgentColumn = board.Agents.OrderBy(a => a.ColumnIndex).FirstOrDefault()?.ColumnIndex ?? 0;
+
+            solutions = new List<Solution>();
+            steps = new List<SearchStep>();
+            solutionFoundStepIndices = new List<int>();
+            currentStepIndex = 0;
+
+            boardMessage = $"Загружена доска Id = {board.Id}, клеток: {board.Cells.Count}. Режим: ручная раскраска (цвета из БД).";
+        }
+        catch (Exception ex)
+        {
+            boardMessage = $"Ошибка загрузки доски: {ex.Message}";
         }
     }
 
@@ -526,12 +826,17 @@
         }
 
         CancelPlayback();
-        var next = solutionFoundStepIndices
-            .Where(idx => idx > currentStepIndex)
-            .DefaultIfEmpty(currentStepIndex)
-            .Min();
+        var currentListIndex = CurrentSolutionListIndex;
+        if (currentListIndex < 0)
+        {
+            currentStepIndex = solutionFoundStepIndices[0];
+        }
+        else
+        {
+            var nextListIndex = Math.Min(currentListIndex + 1, solutionFoundStepIndices.Count - 1);
+            currentStepIndex = solutionFoundStepIndices[nextListIndex];
+        }
 
-        currentStepIndex = next;
         StateHasChanged();
     }
 
@@ -568,6 +873,26 @@
     private Task HandleBoardCellClick(Position position)
     {
         boardMessage = null;
+
+        if (!useAutomaticCellDistribution && !boardInteractionAgents)
+        {
+            var cell = board.Cells.FirstOrDefault(x => x.Row == position.Row && x.Column == position.Column);
+            if (cell is null)
+            {
+                return Task.CompletedTask;
+            }
+
+            var i = selectedBrushIndex;
+            if (i < 0 || i > 2)
+            {
+                i = 0;
+            }
+
+            cell.Color = cellColors[i];
+            cell.Cost = colorCosts[i];
+            return Task.CompletedTask;
+        }
+
         var agent = SelectedAgent;
         if (agent is null)
         {
@@ -681,5 +1006,44 @@
     private void OnSortModeChanged()
     {
         ApplySort();
+        solutionFoundStepIndices = BuildSolutionStepIndicesForDisplayedSolutions();
+    }
+
+    /// <summary>
+    /// Строит соответствие "решение в текущем списке справа" -> индекс шага SolutionFound в журнале.
+    /// Это нужно, чтобы клик по решению работал корректно после сортировки списка решений.
+    /// </summary>
+    private List<int> BuildSolutionStepIndicesForDisplayedSolutions()
+    {
+        var foundStepsByKey = steps
+            .Select((s, idx) => new { s, idx })
+            .Where(x => x.s.Type == SearchStepType.SolutionFound)
+            .GroupBy(x => BuildKeyFromPositions(x.s.AgentPositionsSnapshot))
+            .ToDictionary(
+                g => g.Key,
+                g => new Queue<int>(g.Select(x => x.idx)));
+
+        var mapping = new List<int>(solutions.Count);
+        foreach (var solution in solutions)
+        {
+            var key = BuildKeyFromPositions(solution.Items.Select(i => new Position(i.Row, i.Column)));
+            if (foundStepsByKey.TryGetValue(key, out var queue) && queue.Count > 0)
+            {
+                mapping.Add(queue.Dequeue());
+            }
+        }
+
+        return mapping;
+    }
+
+    /// <summary>
+    /// Формирует стабильный ключ набора позиций, независимый от порядка элементов.
+    /// </summary>
+    private static string BuildKeyFromPositions(IEnumerable<Position> positions)
+    {
+        return string.Join("|", positions
+            .OrderBy(p => p.Column)
+            .ThenBy(p => p.Row)
+            .Select(p => $"{p.Row},{p.Column}"));
     }
 }

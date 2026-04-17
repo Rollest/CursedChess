@@ -32,10 +32,24 @@ public sealed class BoardRepository : IBoardRepository
     public async Task<Board?> GetBoardAsync(int id, CancellationToken cancellationToken = default)
     {
         return await _context.Boards
+            .AsNoTracking()
             .Include(b => b.Cells)
             .Include(b => b.Agents)
             .Include(b => b.FixedPositions)
             .FirstOrDefaultAsync(b => b.Id == id, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public async Task<Board?> GetLatestBoardAsync(CancellationToken cancellationToken = default)
+    {
+        return await _context.Boards
+            .AsNoTracking()
+            .Include(b => b.Cells)
+            .Include(b => b.Agents)
+            .Include(b => b.FixedPositions)
+                .ThenInclude(fp => fp.Agent!)
+            .OrderByDescending(b => b.Id)
+            .FirstOrDefaultAsync(cancellationToken);
     }
 
     /// <summary>
@@ -46,6 +60,10 @@ public sealed class BoardRepository : IBoardRepository
     /// <returns>Завершённая задача сохранения.</returns>
     public async Task SaveBoardAsync(Board board, CancellationToken cancellationToken = default)
     {
+        // In Blazor Server scoped DbContext can live across many UI actions.
+        // Clear tracked graph to avoid duplicate-key tracking conflicts on repeated load/save cycles.
+        _context.ChangeTracker.Clear();
+
         foreach (var agent in board.Agents)
         {
             agent.BoardId = board.Id;
@@ -54,6 +72,14 @@ public sealed class BoardRepository : IBoardRepository
         foreach (var fixedPosition in board.FixedPositions)
         {
             fixedPosition.BoardId = board.Id;
+        }
+
+        if (board.Id != 0)
+        {
+            foreach (var cell in board.Cells)
+            {
+                cell.BoardId = board.Id;
+            }
         }
 
         if (board.Id == 0)

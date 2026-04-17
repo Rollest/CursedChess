@@ -51,8 +51,9 @@ else
 
                         var fixedCss = isFixedCell ? "fixed" : "";
                         var selectedCss = isSelectedAgentColumn ? "selected-column" : "";
+                        var paintCss = IsPaintMode ? "board-paint-mode" : "";
 
-                        <td class="board-cell @highlightCss @fixedCss @selectedCss"
+                        <td class="board-cell @highlightCss @fixedCss @selectedCss @paintCss"
                             style="@style"
                             @onclick="@(() => OnCellClick.InvokeAsync(new Position(row, col)))">
                             @if (hasAgent)
@@ -92,5 +93,11 @@ else
 
     [Parameter]
     public EventCallback<Position> OnCellClick { get; set; }
+
+    /// <summary>
+    /// Упрощённый курсор «кисти» при ручной раскраске клеток.
+    /// </summary>
+    [Parameter]
+    public bool IsPaintMode { get; set; }
 }
 
