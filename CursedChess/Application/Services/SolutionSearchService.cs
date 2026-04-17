@@ -139,31 +139,34 @@ public sealed class SolutionSearchService : ISolutionSearchService
         }
 
         /// <summary>
-        /// Проверяет конфликт для размещаемого агента по его правилам.
+        /// Проверяет подходит ли позиция под правила размещенных агентов.
         /// </summary>
-        /// <param name="agent">Агент, для которого проверяется позиция.</param>
-        /// <param name="newPos">Новая позиция агента.</param>
+        /// <param name="candidateOrderIndex">Индекс агента в очереди.</param>
+        /// <param name="candidatePos">Позиция агента.</param>
         /// <returns>`true`, если есть конфликт по правилу агента; иначе `false`.</returns>
-        bool HasConflictForAgent(Agent agent, Position newPos)
+        bool IsAcceptedByPlacedAgents(int candidateOrderIndex, Position candidatePos)
         {
-            var existing = new List<Position>();
-            for (var c = 0; c < size; c++)
+            for (var placedOrderIndex = 0; placedOrderIndex < candidateOrderIndex; placedOrderIndex++)
             {
-                if (currentPositions[c] is { } p)
+                var placedAgent = orderedAgents[placedOrderIndex];
+                var placedPosition = currentPositions[placedAgent.ColumnIndex];
+                if (placedPosition is null)
                 {
-                    existing.Add(p);
+                    continue;
+                }
+
+                var placedAgentRules = _ruleRegistry.Resolve(placedAgent.ConflictRuleKeys ?? []);
+
+                foreach (var rule in placedAgentRules)
+                {
+                    if (rule.HasConflict(candidatePos, new[] { placedPosition.Value }))
+                    {
+                        return false;
+                    }
                 }
             }
 
-            foreach (var rule in _ruleRegistry.Resolve(agent.ConflictRuleKeys ?? []))
-            {
-                if (rule.HasConflict(newPos, existing))
-                {
-                    return true;
-                }
-            }
-
-            return false;
+            return true;
         }
 
         /// <summary>
@@ -208,9 +211,10 @@ public sealed class SolutionSearchService : ISolutionSearchService
 
                 AddStep(SearchStepType.TryPlace, column, fixedRow, "Попытка установить агента в фиксированную позицию", BuildSnapshot());
 
-                if (HasConflictForAgent(agent, fixedPos))
+                if (!IsAcceptedByPlacedAgents(agentOrderIndex, fixedPos))
                 {
-                    AddStep(SearchStepType.ConflictFound, column, fixedRow, "Конфликт с фиксированной позицией", BuildSnapshot());
+                    AddStep(SearchStepType.ConflictFound, column, fixedRow,
+                        "Фиксированная позиция отклонена ранее размещённым агентом", BuildSnapshot());
                     return;
                 }
 
@@ -231,9 +235,10 @@ public sealed class SolutionSearchService : ISolutionSearchService
 
                 AddStep(SearchStepType.TryPlace, column, row, "Попытка установить агента", BuildSnapshot());
 
-                if (HasConflictForAgent(agent, pos))
+                if (!IsAcceptedByPlacedAgents(agentOrderIndex, pos))
                 {
-                    AddStep(SearchStepType.ConflictFound, column, row, "Обнаружен конфликт", BuildSnapshot());
+                    AddStep(SearchStepType.ConflictFound, column, row,
+                        "Позиция отклонена ранее размещённым агентом", BuildSnapshot());
                     continue;
                 }
 
