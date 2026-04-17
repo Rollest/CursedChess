@@ -49,6 +49,13 @@ public class Agent
     [NotMapped]
     public Agent? PreviousAgent { get; set; }
 
+    /// <summary>
+    /// Рекурсивно проверяет подходит ли позиция агента-кандидата.
+    /// </summary>
+    /// <param name="candidatePosition">Позиция агента-кандидата.</param>
+    /// <param name="currentPositions">Позиция проверяющего агента.</param>
+    /// <param name="resolveRules">Правила проверки.</param>
+    /// <returns>Истина, если позиция агента-кандидата удовлетворяет всех агентов в цепочке.</returns>
     public bool ApprovesCandidate(
         Position candidatePosition,
         Position?[] currentPositions,
