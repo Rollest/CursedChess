@@ -163,6 +163,14 @@
                     <span>Агент (колонка @agent.ColumnIndex)</span>
                     <input type="number" min="0" @bind="agent.Priority" />
                     <label>
+                        <input type="checkbox" checked="@agent.ConflictRuleKeys.Contains(KnownConflictRuleKeys.Row)" @onchange="(e) => ToggleAgentConflictRule(agent, KnownConflictRuleKeys.Row, e)" />
+                        Строка
+                    </label>
+                    <label>
+                        <input type="checkbox" checked="@agent.ConflictRuleKeys.Contains(KnownConflictRuleKeys.Diagonal)" @onchange="(e) => ToggleAgentConflictRule(agent, KnownConflictRuleKeys.Diagonal, e)" />
+                        Диагональ
+                    </label>
+                    <label>
                         <input type="checkbox" checked="@agent.IsFixed" @onchange="(e) => SetFixedFlag(agent, e)" />
                         Фиксирован
                     </label>
@@ -496,7 +504,10 @@
                 Id = a.Id,
                 ColumnIndex = a.ColumnIndex,
                 IsFixed = a.IsFixed,
-                Priority = a.Priority
+                Priority = a.Priority,
+                ConflictRuleKeys = a.ConflictRuleKeys.Count > 0
+                    ? new List<string>(a.ConflictRuleKeys)
+                    : new List<string>(KnownConflictRuleKeys.DefaultNQueens)
             })
             .ToDictionary(a => a.ColumnIndex, a => a);
         var previousFixed = board.FixedPositions
@@ -576,7 +587,8 @@
                 {
                     ColumnIndex = c,
                     IsFixed = existing.IsFixed,
-                    Priority = existing.Priority
+                    Priority = existing.Priority,
+                    ConflictRuleKeys = new List<string>(existing.ConflictRuleKeys)
                 });
             }
             else
@@ -585,7 +597,8 @@
                 {
                     ColumnIndex = c,
                     IsFixed = false,
-                    Priority = c
+                    Priority = c,
+                    ConflictRuleKeys = new List<string>(KnownConflictRuleKeys.DefaultNQueens)
                 });
             }
         }
@@ -626,13 +639,9 @@
             boardMessage = null;
             SyncFixedPositionsWithAgents();
 
-            var rules = new List<IConflictRule>();
-            rules.Add(new RowConflictRule());
-            rules.Add(new DiagonalConflictRule());
-
             await BoardRepository.SaveBoardAsync(board);
             boardMessage = $"Доска сохранена в БД, Id = {board.Id} (цвета и стоимость клеток — в таблице Cells).";
-            var result = SolutionSearch.FindSolutions(board, rules, requireSameColor);
+            var result = SolutionSearch.FindSolutions(board, requireSameColor);
             foreach (var solution in result.solutions)
             {
                 solution.BoardId = board.Id;
@@ -924,6 +933,29 @@
         current.Column = agent.ColumnIndex;
         agent.IsFixed = true;
         return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Включает или выключает ключ правила конфликта у агента.
+    /// </summary>
+    /// <param name="agent">Агент.</param>
+    /// <param name="key">Ключ правила (<see cref="KnownConflictRuleKeys"/>).</param>
+    /// <param name="args">Аргументы события чекбокса.</param>
+    /// <returns>Ничего не возвращает.</returns>
+    private void ToggleAgentConflictRule(Agent agent, string key, ChangeEventArgs args)
+    {
+        var enabled = args.Value is bool value && value;
+        if (enabled)
+        {
+            if (!agent.ConflictRuleKeys.Contains(key))
+            {
+                agent.ConflictRuleKeys.Add(key);
+            }
+        }
+        else
+        {
+            agent.ConflictRuleKeys.Remove(key);
+        }
     }
 
     /// <summary>

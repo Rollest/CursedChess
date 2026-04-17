@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations.Schema;
+using CursedChess.Domain.Rules;
 
 namespace CursedChess.Domain.Entities;
 
@@ -39,10 +40,9 @@ public class Agent
     /// </summary>
     public int Priority { get; set; }
 
-    [NotMapped]
     /// <summary>
-    /// Ключи правил конфликта для агента (резерв для будущей настройки).
+    /// Ключи правил конфликта для агента (см. <see cref="KnownConflictRuleKeys"/>).
     /// </summary>
-    public ICollection<string> ConflictRuleKeys { get; set; } = new List<string>();
+    public List<string> ConflictRuleKeys { get; set; } = new List<string>(KnownConflictRuleKeys.DefaultNQueens);
 }
 

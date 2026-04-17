@@ -24,6 +24,7 @@ public class Program
             });
 
         // Domain/Application services
+        builder.Services.AddSingleton<Application.ConflictRules.IConflictRuleRegistry, Application.ConflictRules.ConflictRuleRegistry>();
         builder.Services.AddScoped<Application.Contracts.ISolutionSearchService, Application.Services.SolutionSearchService>();
         builder.Services.AddScoped<Application.Contracts.IBoardRepository, Infrastructure.Repositories.BoardRepository>();
         builder.Services.AddScoped<Application.Contracts.ISolutionRepository, Infrastructure.Repositories.SolutionRepository>();

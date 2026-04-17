@@ -1,3 +1,4 @@
+using System.Text.Json;
 using CursedChess.Domain.Entities;
 using Microsoft.EntityFrameworkCore;
 
@@ -60,6 +61,12 @@ public class BoardDbContext : DbContext
             .OnDelete(DeleteBehavior.Cascade);
 
         modelBuilder.Entity<Agent>()
+            .Property(a => a.ConflictRuleKeys)
+            .HasConversion(
+                v => SerializeConflictRuleKeys(v),
+                v => DeserializeConflictRuleKeys(v));
+
+        modelBuilder.Entity<Agent>()
             .HasIndex(a => new { a.BoardId, a.ColumnIndex })
             .IsUnique();
 
@@ -93,5 +100,15 @@ public class BoardDbContext : DbContext
             .HasForeignKey(i => i.SolutionId)
             .OnDelete(DeleteBehavior.Cascade);
     }
+
+    private static readonly JsonSerializerOptions ConflictRuleKeysJsonOptions = new();
+
+    private static string SerializeConflictRuleKeys(List<string> value) =>
+        JsonSerializer.Serialize(value, ConflictRuleKeysJsonOptions);
+
+    private static List<string> DeserializeConflictRuleKeys(string value) =>
+        string.IsNullOrEmpty(value)
+            ? new List<string>()
+            : JsonSerializer.Deserialize<List<string>>(value, ConflictRuleKeysJsonOptions) ?? new List<string>();
 }
 

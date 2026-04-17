@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using CursedChess.Application.ConflictRules;
 using CursedChess.Application.Contracts;
 using CursedChess.Domain.Entities;
 using CursedChess.Domain.Rules;
@@ -10,16 +11,25 @@ namespace CursedChess.Application.Services;
 /// </summary>
 public sealed class SolutionSearchService : ISolutionSearchService
 {
+    private readonly IConflictRuleRegistry _ruleRegistry;
+
+    /// <summary>
+    /// Создаёт сервис поиска с реестром правил конфликта.
+    /// </summary>
+    /// <param name="ruleRegistry">Реестр правил по ключам агента.</param>
+    public SolutionSearchService(IConflictRuleRegistry ruleRegistry)
+    {
+        _ruleRegistry = ruleRegistry;
+    }
+
     /// <summary>
     /// Находит решения и формирует список шагов поиска по заданной доске и ограничениям.
     /// </summary>
     /// <param name="board">Доска, для которой выполняется поиск.</param>
-    /// <param name="conflictRules">Коллекция правил конфликтов между агентами.</param>
     /// <param name="requireSameColor">Требует ли согласованность по цвету у найденных позиций.</param>
     /// <returns>Кортеж: найденные решения и шаги поиска.</returns>
     public (IReadOnlyList<Solution> solutions, IReadOnlyList<SearchStep> steps) FindSolutions(
         Board board,
-        IReadOnlyCollection<IConflictRule> conflictRules,
         bool requireSameColor)
     {
         var size = board.Size;
@@ -30,7 +40,8 @@ public sealed class SolutionSearchService : ISolutionSearchService
                 BoardId = board.Id,
                 ColumnIndex = i,
                 Priority = i,
-                IsFixed = false
+                IsFixed = false,
+                ConflictRuleKeys = new List<string>(KnownConflictRuleKeys.DefaultNQueens)
             }).ToList();
         var orderedAgents = boardAgents
             .OrderByDescending(a => a.IsFixed)
@@ -128,11 +139,12 @@ public sealed class SolutionSearchService : ISolutionSearchService
         }
 
         /// <summary>
-        /// Проверяет, конфликтует ли новая позиция с уже размещёнными агентами.
+        /// Проверяет конфликт для размещаемого агента по его правилам.
         /// </summary>
+        /// <param name="agent">Агент, для которого проверяется позиция.</param>
         /// <param name="newPos">Новая позиция агента.</param>
-        /// <returns>`true`, если есть конфликт по какому-либо правилу; иначе `false`.</returns>
-        bool HasConflict(Position newPos)
+        /// <returns>`true`, если есть конфликт по правилу агента; иначе `false`.</returns>
+        bool HasConflictForAgent(Agent agent, Position newPos)
         {
             var existing = new List<Position>();
             for (var c = 0; c < size; c++)
@@ -143,7 +155,7 @@ public sealed class SolutionSearchService : ISolutionSearchService
                 }
             }
 
-            foreach (var rule in conflictRules)
+            foreach (var rule in _ruleRegistry.Resolve(agent.ConflictRuleKeys ?? []))
             {
                 if (rule.HasConflict(newPos, existing))
                 {
@@ -196,7 +208,7 @@ public sealed class SolutionSearchService : ISolutionSearchService
 
                 AddStep(SearchStepType.TryPlace, column, fixedRow, "Попытка установить агента в фиксированную позицию", BuildSnapshot());
 
-                if (HasConflict(fixedPos))
+                if (HasConflictForAgent(agent, fixedPos))
                 {
                     AddStep(SearchStepType.ConflictFound, column, fixedRow, "Конфликт с фиксированной позицией", BuildSnapshot());
                     return;
@@ -219,7 +231,7 @@ public sealed class SolutionSearchService : ISolutionSearchService
 
                 AddStep(SearchStepType.TryPlace, column, row, "Попытка установить агента", BuildSnapshot());
 
-                if (HasConflict(pos))
+                if (HasConflictForAgent(agent, pos))
                 {
                     AddStep(SearchStepType.ConflictFound, column, row, "Обнаружен конфликт", BuildSnapshot());
                     continue;
