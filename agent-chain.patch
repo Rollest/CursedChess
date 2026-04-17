@@ -1,0 +1,120 @@
+--- a/CursedChess/Domain/Entities/Agent.cs
++++ b/CursedChess/Domain/Entities/Agent.cs
+@@
+ using System.Collections.Generic;
+ using System.ComponentModel.DataAnnotations.Schema;
++using CursedChess.Domain.Rules;
+ 
+ namespace CursedChess.Domain.Entities;
+ 
+ public class Agent
+ {
+@@
+     public bool IsFixed { get; set; }
+     public int Priority { get; set; }
+ 
+     public ICollection<string> ConflictRuleKeys { get; set; } = new List<string>();
++
++    [NotMapped]
++    public Agent? PreviousAgent { get; set; }
++
++    public bool ApprovesCandidate(
++        Position candidatePosition,
++        Position?[] currentPositions,
++        Func<Agent, IReadOnlyCollection<IConflictRule>> resolveRules)
++    {
++        var ownPosition = currentPositions[ColumnIndex];
++        if (ownPosition is not null)
++        {
++            var rules = resolveRules(this);
++            foreach (var rule in rules)
++            {
++                if (rule.HasConflict(candidatePosition, new[] { ownPosition.Value }))
++                {
++                    return false;
++                }
++            }
++        }
++
++        return PreviousAgent?.ApprovesCandidate(candidatePosition, currentPositions, resolveRules) ?? true;
++    }
+ }
+--- a/CursedChess/Application/Services/SolutionSearchService.cs
++++ b/CursedChess/Application/Services/SolutionSearchService.cs
+@@
+         var orderedAgents = boardAgents
+             .OrderByDescending(a => a.IsFixed)
+             .ThenBy(a => a.Priority)
+             .ThenBy(a => a.ColumnIndex)
+             .ToList();
++
++        for (var i = 0; i < orderedAgents.Count; i++)
++        {
++            orderedAgents[i].PreviousAgent = i > 0 ? orderedAgents[i - 1] : null;
++        }
++
+         var fixedByColumn = board.FixedPositions
+             .GroupBy(fp => fp.Column)
+             .ToDictionary(g => g.Key, g => g.First().Row);
+@@
+-        /// <summary>
+-        /// Проверяет подходит ли позиция под правила размещенных агентов.
+-        /// </summary>
+-        /// <param name="candidateOrderIndex">Индекс агента в очереди.</param>
+-        /// <param name="candidatePos">Позиция агента.</param>
+-        /// <returns>`true`, если есть конфликт по правилу агента; иначе `false`.</returns>
+-        bool IsAcceptedByPlacedAgents(int candidateOrderIndex, Position candidatePos)
++        /// <summary>
++        /// Возвращает правила конкретного агента по его ключам.
++        /// </summary>
++        IReadOnlyCollection<IConflictRule> ResolveRules(Agent sourceAgent)
+         {
+-            for (var placedOrderIndex = 0; placedOrderIndex < candidateOrderIndex; placedOrderIndex++)
+-            {
+-                var placedAgent = orderedAgents[placedOrderIndex];
+-                var placedPosition = currentPositions[placedAgent.ColumnIndex];
+-                if (placedPosition is null)
+-                {
+-                    continue;
+-                }
+-
+-                var placedAgentRules = _ruleRegistry.Resolve(placedAgent.ConflictRuleKeys ?? []);
+-
+-                foreach (var rule in placedAgentRules)
+-                {
+-                    if (rule.HasConflict(candidatePos, new[] { placedPosition.Value }))
+-                    {
+-                        return false;
+-                    }
+-                }
+-            }
+-
+-            return true;
++            return _ruleRegistry.Resolve(sourceAgent.ConflictRuleKeys ?? []).ToArray();
++        }
++
++        /// <summary>
++        /// Запускает рекурсивную проверку по цепочке ранее размещённых агентов.
++        /// </summary>
++        bool IsAcceptedByChain(Agent agent, Position candidatePos)
++        {
++            return agent.PreviousAgent?.ApprovesCandidate(candidatePos, currentPositions, ResolveRules) ?? true;
+         }
+@@
+-                if (!IsAcceptedByPlacedAgents(agentOrderIndex, fixedPos))
++                if (!IsAcceptedByChain(agent, fixedPos))
+                 {
+                     AddStep(SearchStepType.ConflictFound, column, fixedRow,
+-                        "Фиксированная позиция отклонена ранее размещённым агентом", BuildSnapshot());
++                        "Фиксированная позиция отклонена цепочкой ранее размещённых агентов", BuildSnapshot());
+                     return;
+                 }
+@@
+-                if (!IsAcceptedByPlacedAgents(agentOrderIndex, pos))
++                if (!IsAcceptedByChain(agent, pos))
+                 {
+                     AddStep(SearchStepType.ConflictFound, column, row,
+-                        "Позиция отклонена ранее размещённым агентом", BuildSnapshot());
++                        "Позиция отклонена цепочкой ранее размещённых агентов", BuildSnapshot());
+                     continue;
+                 }

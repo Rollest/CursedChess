@@ -40,9 +40,33 @@ public class Agent
     /// </summary>
     public int Priority { get; set; }
 
+    [NotMapped]
     /// <summary>
-    /// Ключи правил конфликта для агента (см. <see cref="KnownConflictRuleKeys"/>).
+    /// Ключи правил конфликта для агента.
     /// </summary>
-    public List<string> ConflictRuleKeys { get; set; } = new List<string>(KnownConflictRuleKeys.DefaultNQueens);
-}
+    public List<string> ConflictRuleKeys { get; set; } = new();
 
+    [NotMapped]
+    public Agent? PreviousAgent { get; set; }
+
+    public bool ApprovesCandidate(
+        Position candidatePosition,
+        Position?[] currentPositions,
+        Func<Agent, IReadOnlyCollection<IConflictRule>> resolveRules)
+    {
+        var ownPosition = currentPositions[ColumnIndex];
+        if (ownPosition is not null)
+        {
+            var rules = resolveRules(this);
+            foreach (var rule in rules)
+            {
+                if (rule.HasConflict(candidatePosition, new[] { ownPosition.Value }))
+                {
+                    return false;
+                }
+            }
+        }
+
+        return PreviousAgent?.ApprovesCandidate(candidatePosition, currentPositions, resolveRules) ?? true;
+    }
+}

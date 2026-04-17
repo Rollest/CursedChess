@@ -48,6 +48,10 @@ public sealed class SolutionSearchService : ISolutionSearchService
             .ThenBy(a => a.Priority)
             .ThenBy(a => a.ColumnIndex)
             .ToList();
+        for (var i = 0; i < orderedAgents.Count; i++)
+        {
+            orderedAgents[i].PreviousAgent = i > 0 ? orderedAgents[i - 1] : null;
+        }
         var fixedByColumn = board.FixedPositions
             .GroupBy(fp => fp.Column)
             .ToDictionary(g => g.Key, g => g.First().Row);
@@ -139,34 +143,27 @@ public sealed class SolutionSearchService : ISolutionSearchService
         }
 
         /// <summary>
-        /// Проверяет подходит ли позиция под правила размещенных агентов.
+        /// Возвращает набор правил конфликта, назначенных указанному агенту.
         /// </summary>
-        /// <param name="candidateOrderIndex">Индекс агента в очереди.</param>
-        /// <param name="candidatePos">Позиция агента.</param>
-        /// <returns>`true`, если есть конфликт по правилу агента; иначе `false`.</returns>
-        bool IsAcceptedByPlacedAgents(int candidateOrderIndex, Position candidatePos)
+        /// <param name="sourceAgent">Агент, для которого требуется получить активные правила.</param>
+        /// <returns>Коллекция правил конфликта, применяемых данным агентом.</returns>
+        IReadOnlyCollection<IConflictRule> ResolveRules(Agent sourceAgent)
         {
-            for (var placedOrderIndex = 0; placedOrderIndex < candidateOrderIndex; placedOrderIndex++)
-            {
-                var placedAgent = orderedAgents[placedOrderIndex];
-                var placedPosition = currentPositions[placedAgent.ColumnIndex];
-                if (placedPosition is null)
-                {
-                    continue;
-                }
+            return _ruleRegistry.Resolve(sourceAgent.ConflictRuleKeys ?? []).ToArray();
+        }
 
-                var placedAgentRules = _ruleRegistry.Resolve(placedAgent.ConflictRuleKeys ?? []);
-
-                foreach (var rule in placedAgentRules)
-                {
-                    if (rule.HasConflict(candidatePos, new[] { placedPosition.Value }))
-                    {
-                        return false;
-                    }
-                }
-            }
-
-            return true;
+        /// <summary>
+        /// Запускает рекурсивную проверку позиции по цепочке ранее размещённых агентов.
+        /// </summary>
+        /// <param name="agent">Агент, для которого проверяется возможность размещения.</param>
+        /// <param name="candidatePos">Кандидатная позиция агента на доске.</param>
+        /// <returns>
+        /// <c>true</c>, если позиция принята всей цепочкой ранее размещённых агентов;
+        /// иначе <c>false</c>.
+        /// </returns>
+        bool IsAcceptedByChain(Agent agent, Position candidatePos)
+        {
+            return agent.PreviousAgent?.ApprovesCandidate(candidatePos, currentPositions, ResolveRules) ?? true;
         }
 
         /// <summary>
@@ -211,7 +208,7 @@ public sealed class SolutionSearchService : ISolutionSearchService
 
                 AddStep(SearchStepType.TryPlace, column, fixedRow, "Попытка установить агента в фиксированную позицию", BuildSnapshot());
 
-                if (!IsAcceptedByPlacedAgents(agentOrderIndex, fixedPos))
+                if (!IsAcceptedByChain(agent, fixedPos))
                 {
                     AddStep(SearchStepType.ConflictFound, column, fixedRow,
                         "Фиксированная позиция отклонена ранее размещённым агентом", BuildSnapshot());
@@ -235,7 +232,7 @@ public sealed class SolutionSearchService : ISolutionSearchService
 
                 AddStep(SearchStepType.TryPlace, column, row, "Попытка установить агента", BuildSnapshot());
 
-                if (!IsAcceptedByPlacedAgents(agentOrderIndex, pos))
+                if (!IsAcceptedByChain(agent, pos))
                 {
                     AddStep(SearchStepType.ConflictFound, column, row,
                         "Позиция отклонена ранее размещённым агентом", BuildSnapshot());
